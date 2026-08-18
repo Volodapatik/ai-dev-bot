@@ -202,12 +202,15 @@ async def handle(message: types.Message):
         await msg.edit_text(f"❌ Помилка: {e}")
 
 async def main():
-    # Connector та Bot створюються тільки ВСЕРЕДИНІ async функції
     connector = aiohttp.TCPConnector(family=socket.AF_INET)
-    async with AiohttpSession(connector=connector) as session:
-        bot = Bot(token=BOT_TOKEN, session=session)
-        print("🤖 Запущено на llama-3.1-8b-instant з IPv4 фіксом...")
+    session = AiohttpSession(connector_init={"connector": connector})
+    bot = Bot(token=BOT_TOKEN, session=session)
+    print("🤖 Запущено на llama-3.1-8b-instant з IPv4 фіксом...")
+    
+    try:
         await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
