@@ -8,7 +8,6 @@ import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.client.session.aiohttp import AiohttpSession
 from github import Auth, Github
-from groq import Groq
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,17 +15,15 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MY_TELEGRAM_ID = int(os.getenv("MY_TELEGRAM_ID", 0))
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 dp = Dispatcher()
 
 # Авторизація PyGithub
 auth = Auth.Token(GITHUB_TOKEN)
 gh = Github(auth=auth)
-
-groq_client = Groq(api_key=GROQ_API_KEY)
 
 user_history = defaultdict(list)
 MAX_HISTORY = 4
@@ -54,7 +51,7 @@ def create_or_update_file(repo_name: str, path: str, content: str) -> str:
             existing = repo.get_contents(path)
             repo.update_file(path, "Update file via AI Assistant", content, existing.sha)
             return f"✅ Файл '{path}' успішно оновлено в '{repo_name}'."
-        except:
+        except Exception:
             repo.create_file(path, "Create file via AI Assistant", content)
             return f"✅ Файл '{path}' успішно створено в '{repo_name}'."
     except Exception as e:
@@ -79,52 +76,47 @@ tools_map = {
     "get_file_content": get_file_content
 }
 
-TOOLS_SCHEMA = [
+GEMINI_TOOLS = [
     {
-        "type": "function",
-        "function": {
-            "name": "list_repo_files",
-            "description": list_repo_files.__doc__,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo_name": {"type": "string"},
-                    "path": {"type": "string"}
-                },
-                "required": ["repo_name"]
+        "function_declarations": [
+            {
+                "name": "list_repo_files",
+                "description": list_repo_files.__doc__,
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "repo_name": {"type": "STRING"},
+                        "path": {"type": "STRING"}
+                    },
+                    "required": ["repo_name"]
+                }
+            },
+            {
+                "name": "create_or_update_file",
+                "description": create_or_update_file.__doc__,
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "repo_name": {"type": "STRING"},
+                        "path": {"type": "STRING"},
+                        "content": {"type": "STRING"}
+                    },
+                    "required": ["repo_name", "path", "content"]
+                }
+            },
+            {
+                "name": "get_file_content",
+                "description": get_file_content.__doc__,
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "repo_name": {"type": "STRING"},
+                        "path": {"type": "STRING"}
+                    },
+                    "required": ["repo_name", "path"]
+                }
             }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_or_update_file",
-            "description": create_or_update_file.__doc__,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo_name": {"type": "string"},
-                    "path": {"type": "string"},
-                    "content": {"type": "string"}
-                },
-                "required": ["repo_name", "path", "content"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_file_content",
-            "description": get_file_content.__doc__,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo_name": {"type": "string"},
-                    "path": {"type": "string"}
-                },
-                "required": ["repo_name", "path"]
-            }
-        }
+        ]
     }
 ]
 
@@ -138,6 +130,25 @@ SYSTEM_PROMPT = (
     "одразу генеруй повний HTML код з Three.js та викликай create_or_update_file(repo_name='test-website-repo', path='index.html', content='...')."
 )
 
+async def call_gemini(contents):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    
+    payload = {
+        "system_instruction": {
+            "parts": [{"text": SYSTEM_PROMPT}]
+        },
+        "contents": contents,
+        "tools": GEMINI_TOOLS
+    }
+
+    connector = aiohttp.TCPConnector(family=socket.AF_INET)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        async with session.post(url, json=payload) as resp:
+            data = await resp.json()
+            if resp.status != 200:
+                raise Exception(f"Gemini API Error {resp.status}: {data}")
+            return data
+
 @dp.message()
 async def handle(message: types.Message):
     if MY_TELEGRAM_ID and message.from_user.id != MY_TELEGRAM_ID:
@@ -146,56 +157,66 @@ async def handle(message: types.Message):
     user_id = message.from_user.id
     history = user_history[user_id]
     
-    history.append({"role": "user", "content": message.text})
-    if len(history) > MAX_HISTORY:
-        history = history[-MAX_HISTORY:]
+    history.append({
+        "role": "user",
+        "parts": [{"text": message.text}]
+    })
+    
+    if len(history) > MAX_HISTORY * 2:
+        history = history[-(MAX_HISTORY * 2):]
         user_history[user_id] = history
 
-    messages_payload = [{"role": "system", "content": SYSTEM_PROMPT}] + history
-
-    msg = await message.answer("⚡ Генерую 3D код та оновлюю GitHub...")
+    msg = await message.answer("⚡ Генерую 3D код та оновлюю GitHub через Gemini...")
+    
     try:
-        response = groq_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=messages_payload,
-            tools=TOOLS_SCHEMA,
-            max_tokens=3500
-        )
-        
-        choice = response.choices[0].message
-        tool_calls = choice.tool_calls
+        data = await call_gemini(history)
+        candidate = data["candidates"][0]["content"]
+        parts = candidate.get("parts", [])
 
-        if tool_calls:
-            messages_payload.append(choice)
+        function_call = None
+        text_response = ""
+
+        for part in parts:
+            if "functionCall" in part:
+                function_call = part["functionCall"]
+            if "text" in part:
+                text_response += part["text"]
+
+        if function_call:
+            fn_name = function_call["name"]
+            fn_args = function_call.get("args", {})
             
-            for tc in tool_calls:
-                fn_name = tc.function.name
-                if fn_name in tools_map:
-                    fn = tools_map[fn_name]
-                    try:
-                        args = json.loads(tc.function.arguments) if tc.function.arguments else {}
-                    except Exception:
-                        args = {}
-                    
-                    res = safe_call(fn, args)
-                    messages_payload.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": str(res)
-                    })
+            if fn_name in tools_map:
+                fn = tools_map[fn_name]
+                res = safe_call(fn, fn_args)
+                
+                # Додаємо виклик і відповідь інструменту в історію Gemini
+                history.append(candidate)
+                history.append({
+                    "role": "function",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": fn_name,
+                            "response": {"output": str(res)}
+                        }
+                    }]
+                })
 
-            second_response = groq_client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=messages_payload
-            )
-            
-            final_text = second_response.choices[0].message.content or "✅ 3D тачка успішно загружена в index.html!"
-            history.append({"role": "assistant", "content": final_text})
-            await msg.edit_text(final_text)
-
+                second_data = await call_gemini(history)
+                second_parts = second_data["candidates"][0]["content"].get("parts", [])
+                final_text = "".join([p.get("text", "") for p in second_parts]) or "✅ Операцію успішно виконано!"
+                
+                history.append({
+                    "role": "model",
+                    "parts": [{"text": final_text}]
+                })
+                await msg.edit_text(final_text)
         else:
-            final_text = choice.content or "Виконано."
-            history.append({"role": "assistant", "content": final_text})
+            final_text = text_response or "Виконано."
+            history.append({
+                "role": "model",
+                "parts": [{"text": final_text}]
+            })
             await msg.edit_text(final_text)
 
     except Exception as e:
@@ -205,7 +226,7 @@ async def main():
     connector = aiohttp.TCPConnector(family=socket.AF_INET)
     session = AiohttpSession(connector_init={"connector": connector})
     bot = Bot(token=BOT_TOKEN, session=session)
-    print("🤖 Запущено на llama-3.1-8b-instant з IPv4 фіксом...")
+    print("🤖 Запущено Telegram-бота з Gemini API та IPv4 фіксом...")
     
     try:
         await dp.start_polling(bot)
