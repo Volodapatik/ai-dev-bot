@@ -14,21 +14,20 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 MY_TELEGRAM_ID = int(os.getenv("MY_TELEGRAM_ID", 0))
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 gh = Github(GITHUB_TOKEN)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# Збереження історії повідомлень (пам'ять бота)
 user_history = defaultdict(list)
-MAX_HISTORY = 10
+MAX_HISTORY = 6
 
 # --- ФУНКЦІЇ GITHUB ---
 
 def list_repo_files(repo_name: str, path: str = "") -> str:
-    """Виводит список файлів у вказаному репозиторії GitHub."""
+    """Виводить список файлів у репозиторії GitHub."""
     try:
         repo_name = repo_name.strip("/").split("/")[-1]
         user = gh.get_user()
@@ -40,14 +39,14 @@ def list_repo_files(repo_name: str, path: str = "") -> str:
     except Exception as e:
         return f"❌ Помилка отримання файлів: {e}"
 
-def list_github_repositories(limit: int = 50) -> str:
-    """Виводить список усіх репозиторіїв користувача."""
+def list_github_repositories(limit: int = 30) -> str:
+    """Виводить список репозиторіїв користувача."""
     try:
         user = gh.get_user()
         repos = list(user.get_repos())
-        return "📦 Ваші репозиторії:\n" + "\n".join([f"- {r.name}" for r in repos[:limit]])
+        return "📦 Репозиторії:\n" + "\n".join([f"- {r.name}" for r in repos[:limit]])
     except Exception as e:
-        return f"❌ Помилка отримання списку репозиторіїв: {e}"
+        return f"❌ Помилка списку репозиторіїв: {e}"
 
 def create_or_update_file(repo_name: str, path: str, content: str) -> str:
     """Створює або оновлює файл у репозиторії GitHub."""
@@ -58,25 +57,25 @@ def create_or_update_file(repo_name: str, path: str, content: str) -> str:
         try:
             existing = repo.get_contents(path)
             repo.update_file(path, "Update file via AI Assistant", content, existing.sha)
-            return f"✅ Файл '{path}' успішно оновлено в репозиторії '{repo_name}'."
+            return f"✅ Файл '{path}' успішно оновлено в '{repo_name}'."
         except:
             repo.create_file(path, "Create file via AI Assistant", content)
-            return f"✅ Файл '{path}' успішно створено в репозиторії '{repo_name}'."
+            return f"✅ Файл '{path}' успішно створено в '{repo_name}'."
     except Exception as e:
-        return f"❌ Помилка при записі файлу: {e}"
+        return f"❌ Помилка запису файлу: {e}"
 
 def get_file_content(repo_name: str, path: str) -> str:
-    """Отримує текстовий вміст конкретного файлу з репозиторію."""
+    """Отримує текстовий вміст файлу з репозиторію."""
     try:
         repo_name = repo_name.strip("/").split("/")[-1]
         user = gh.get_user()
         repo = user.get_repo(repo_name)
         content = repo.get_contents(path).decoded_content.decode('utf-8')
+        if len(content) > 3000:
+            content = content[:3000] + "\n\n...[вміст обрізано для економії токенів]..."
         return content
     except Exception as e:
         return f"❌ Помилка читання файлу: {e}"
-
-# --- КАРТА ІНСТРУМЕНТІВ ---
 
 tools_map = {
     "list_repo_files": list_repo_files,
@@ -95,7 +94,7 @@ TOOLS_SCHEMA = [
                 "type": "object",
                 "properties": {
                     "repo_name": {"type": "string", "description": "Назва репозиторію"},
-                    "path": {"type": "string", "description": "Шлях до папки (за замовчуванням порожньо)"}
+                    "path": {"type": "string", "description": "Шлях до папки"}
                 },
                 "required": ["repo_name"]
             }
@@ -119,7 +118,7 @@ TOOLS_SCHEMA = [
                 "properties": {
                     "repo_name": {"type": "string", "description": "Назва репозиторію"},
                     "path": {"type": "string", "description": "Шлях/ім'я файлу (наприклад, index.html)"},
-                    "content": {"type": "string", "description": "Повний новий вміст файлу"}
+                    "content": {"type": "string", "description": "Повний новий HTML/JS/CSS код"}
                 },
                 "required": ["repo_name", "path", "content"]
             }
@@ -148,10 +147,11 @@ def safe_call(func, args):
     return func(**filtered_args)
 
 SYSTEM_PROMPT = (
-    "Ти — досвідчений і рішучий Dev Assistant. Твоє завдання — допомагати розробнику з GitHub.\n"
-    "1. Завжди аналізуй контекст попередніх повідомлень. Якщо користувач питає 'про що код в цьому файлі', викликай get_file_content, а потім поясни його зміст.\n"
-    "2. Якщо просять щось змінити або замінити сайт на 3D модель — не став 10 питань, одразу генеруй код і викликай create_or_update_file.\n"
-    "3. Будь стислим, конкретним і відповідай зрозумілою українською мовою."
+    "Ти — Dev Assistant. Твоє завдання — розробляти веб-сторінки та працювати з GitHub.\n"
+    "Якщо користувач просить переробити сайт на 3D модель (наприклад Three.js), одразу генеруй повний HTML-код "
+    "з необхідними скриптами (CDN Three.js, OrbitControls), стилями для мобільних пристроїв та 3D об'єктом. "
+    "Викликай create_or_update_file для збереження коду в index.html відповідного репозиторію.\n"
+    "Відповідай стисло та зрозуміло українською мовою."
 )
 
 @dp.message()
@@ -162,7 +162,6 @@ async def handle(message: types.Message):
     user_id = message.from_user.id
     history = user_history[user_id]
     
-    # Додаємо нове повідомлення в історію
     history.append({"role": "user", "content": message.text})
     if len(history) > MAX_HISTORY:
         history = history[-MAX_HISTORY:]
@@ -170,19 +169,19 @@ async def handle(message: types.Message):
 
     messages_payload = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
-    msg = await message.answer("🧠 Думаю...")
+    msg = await message.answer("🧠 Працюю над завданням...")
     try:
         response = groq_client.chat.completions.create(
             model=GROQ_MODEL,
             messages=messages_payload,
-            tools=TOOLS_SCHEMA
+            tools=TOOLS_SCHEMA,
+            max_tokens=4096
         )
         
         choice = response.choices[0].message
         tool_calls = choice.tool_calls
 
         if tool_calls:
-            # Модель попросила викликати інструмент
             messages_payload.append(choice)
             
             for tc in tool_calls:
@@ -196,25 +195,26 @@ async def handle(message: types.Message):
                     
                     res = safe_call(fn, args)
                     
-                    # Додаємо результат функції в контекст
                     messages_payload.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": str(res)
                     })
 
-            # Повторний запит до Groq, щоб модель дала фінальну відповідь на основі отриманих даних
             second_response = groq_client.chat.completions.create(
                 model=GROQ_MODEL,
-                messages=messages_payload
+                messages=messages_payload,
+                max_tokens=1000
             )
             
-            final_text = second_response.choices[0].message.content
+            final_text = second_response.choices[0].message.content or "Зміни успішно внесено до GitHub!"
             history.append({"role": "assistant", "content": final_text})
             await msg.edit_text(final_text)
 
         else:
-            final_text = choice.content or "Отримано порожню відповідь."
+            final_text = choice.content
+            if not final_text:
+                final_text = "Не вдалося згенерувати відповідь. Спробуй повторити запит ще раз."
             history.append({"role": "assistant", "content": final_text})
             await msg.edit_text(final_text)
 
@@ -222,7 +222,7 @@ async def handle(message: types.Message):
         await msg.edit_text(f"❌ Помилка: {e}")
 
 async def main():
-    print("🤖 Бот запущений з пам'яттю диалогу...")
+    print("🤖 Бот запущен з підтримкою Qwen та двокроковим інструментарієм...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
