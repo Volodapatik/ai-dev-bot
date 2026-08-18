@@ -32,15 +32,26 @@ def create_github_repository(name: str, private: bool = False) -> str:
     except Exception as e:
         return f"Помилка створення репозиторію: {e}"
 
-def list_github_repositories() -> str:
-    """Повертає список останніх репозиторіїв користувача."""
+def list_github_repositories(limit: int = 50) -> str:
+    """
+    Повертає загальну кількість та список репозиторіїв користувача.
+    :param limit: кількість репозиторіїв для відображення у списку (за замовчуванням 50).
+    """
     try:
         user = gh.get_user()
-        repos = user.get_repos()
-        repo_names = [f"- {r.name} ({r.html_url})" for r in repos[:15]]
-        if not repo_names:
+        repos = list(user.get_repos())
+        total_count = len(repos)
+        
+        if total_count == 0:
             return "У вас немає репозиторіїв."
-        return "Ваші репозиторії:\n" + "\n".join(repo_names)
+
+        repo_names = [f"- {r.name} ({r.html_url})" for r in repos[:limit]]
+        result = f"Загальна кількість репозиторіїв: {total_count}\n\nОсь список (перші {len(repo_names)}):\n" + "\n".join(repo_names)
+        
+        if total_count > limit:
+            result += f"\n\n...і ще {total_count - limit} репозиторіїв."
+
+        return result
     except Exception as e:
         return f"Помилка отримання списку: {e}"
 
@@ -54,13 +65,13 @@ def delete_github_repository(name: str) -> str:
     except Exception as e:
         return f"Помилка видалення: {e}"
 
-# Списковий масив інструментів для Gemini
 tools_list = [create_github_repository, list_github_repositories, delete_github_repository]
 
 SYSTEM_INSTRUCTION = (
     "Ти — розширений AI Dev Assistant для Володимира Патика. "
     "Ти маєш ПРЯМИЙ доступ до керування його акаунтом GitHub через вбудовані функції (tools). "
-    "Коли користувач просить створити, показати або видалити репозиторій — обов'язково викликай відповідні функції."
+    "Коли користувач запитує про репозиторії, викликай відповідні функції. "
+    "Якщо запитують про кількість або список усіх репозиторіїв — використовуй list_github_repositories з потрібним limit."
 )
 
 def is_owner(user_id: int) -> bool:
@@ -74,7 +85,7 @@ async def start_cmd(message: types.Message):
         "🤖 **AI Dev Assistant готовий!**\n\n"
         "Тепер ти можеш писати мені звичайними словами:\n"
         "• *«Створи репозиторій my-test-bot»*\n"
-        "• *«Покажи мої репозиторії»*\n"
+        "• *«Покажи всі мої репозиторії»*\n"
         "• *«Видали репозиторій test»*"
     )
 
@@ -86,7 +97,6 @@ async def handle_ai_prompt(message: types.Message):
     msg = await message.answer("🧠 Обробка запиту...")
     
     try:
-        # Передаємо функції у параметр tools
         response = ai_client.models.generate_content(
             model=GEMINI_MODEL,
             contents=message.text,
@@ -96,23 +106,21 @@ async def handle_ai_prompt(message: types.Message):
             )
         )
         
-        # Перевірка чи ШІ викликав функцію
         if response.function_calls:
             for call in response.function_calls:
                 func_name = call.name
                 args = call.args
                 
-                # Виконуємо відповідну функцію
                 if func_name == "create_github_repository":
                     result = create_github_repository(**args)
                 elif func_name == "list_github_repositories":
-                    result = list_github_repositories()
+                    result = list_github_repositories(**args)
                 elif func_name == "delete_github_repository":
                     result = delete_github_repository(**args)
                 else:
                     result = "Невідома функція."
                 
-                await msg.edit_text(f"⚙️ **Виконано діяю:**\n{result}")
+                await msg.edit_text(f"⚙️ **Результат:**\n\n{result}", disable_web_page_preview=True)
                 return
 
         await msg.edit_text(response.text)
