@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import inspect
+from collections import defaultdict
 from aiogram import Bot, Dispatcher, types
 from github import Github
 from groq import Groq
@@ -20,12 +21,15 @@ dp = Dispatcher()
 gh = Github(GITHUB_TOKEN)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
+# Збереження історії повідомлень (пам'ять бота)
+user_history = defaultdict(list)
+MAX_HISTORY = 10
+
 # --- ФУНКЦІЇ GITHUB ---
 
 def list_repo_files(repo_name: str, path: str = "") -> str:
-    """Виводить список файлів у вказаному репозиторії GitHub."""
+    """Виводит список файлів у вказаному репозиторії GitHub."""
     try:
-        # Прибираємо можливі префікси або повні URL
         repo_name = repo_name.strip("/").split("/")[-1]
         user = gh.get_user()
         repo = user.get_repo(repo_name)
@@ -68,7 +72,7 @@ def get_file_content(repo_name: str, path: str) -> str:
         user = gh.get_user()
         repo = user.get_repo(repo_name)
         content = repo.get_contents(path).decoded_content.decode('utf-8')
-        return f"📄 Вміст {path}:\n\n```{content}```"
+        return content
     except Exception as e:
         return f"❌ Помилка читання файлу: {e}"
 
@@ -86,11 +90,11 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "list_repo_files",
-            "description": list_repo_files.__doc__ or "Отримати список файлів",
+            "description": list_repo_files.__doc__,
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "repo_name": {"type": "string", "description": "Назва репозиторію (наприклад, ai-dev-bot)"},
+                    "repo_name": {"type": "string", "description": "Назва репозиторію"},
                     "path": {"type": "string", "description": "Шлях до папки (за замовчуванням порожньо)"}
                 },
                 "required": ["repo_name"]
@@ -101,21 +105,15 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "list_github_repositories",
-            "description": list_github_repositories.__doc__ or "Отримати список репозиторіїв",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "limit": {"type": "integer", "description": "Максимальна кількість репозиторіїв"}
-                },
-                "required": []
-            }
+            "description": list_github_repositories.__doc__,
+            "parameters": {"type": "object", "properties": {}, "required": []}
         }
     },
     {
         "type": "function",
         "function": {
             "name": "create_or_update_file",
-            "description": create_or_update_file.__doc__ or "Створити або оновити файл",
+            "description": create_or_update_file.__doc__,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -131,7 +129,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "get_file_content",
-            "description": get_file_content.__doc__ or "Прочитати вміст файлу",
+            "description": get_file_content.__doc__,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -144,20 +142,16 @@ TOOLS_SCHEMA = [
     }
 ]
 
-# --- БЕЗПЕЧНИЙ ВИКЛИК ФУНКЦІЙ ---
-
 def safe_call(func, args):
-    """Викликає функцію, передаючи лише ті аргументи, які вона приймає."""
     sig = inspect.signature(func)
     filtered_args = {k: v for k, v in args.items() if k in sig.parameters}
     return func(**filtered_args)
 
-# --- ЛОГІКА БОТА ---
-
 SYSTEM_PROMPT = (
-    "Ти — розумний Dev Assistant. Твоя мета — допомагати розробнику працювати з його GitHub репозиторіями.\n"
-    "Якщо користувач просить внести зміни або замінити код (наприклад, зробити 3D сайт), одразу підготовуй готовий код "
-    "і викликай функцію 'create_or_update_file'. Не став забагато уточнюючих питань, дій рішуче."
+    "Ти — досвідчений і рішучий Dev Assistant. Твоє завдання — допомагати розробнику з GitHub.\n"
+    "1. Завжди аналізуй контекст попередніх повідомлень. Якщо користувач питає 'про що код в цьому файлі', викликай get_file_content, а потім поясни його зміст.\n"
+    "2. Якщо просять щось змінити або замінити сайт на 3D модель — не став 10 питань, одразу генеруй код і викликай create_or_update_file.\n"
+    "3. Будь стислим, конкретним і відповідай зрозумілою українською мовою."
 )
 
 @dp.message()
@@ -165,14 +159,22 @@ async def handle(message: types.Message):
     if MY_TELEGRAM_ID and message.from_user.id != MY_TELEGRAM_ID:
         return
     
-    msg = await message.answer("🧠 Обробляю запит...")
+    user_id = message.from_user.id
+    history = user_history[user_id]
+    
+    # Додаємо нове повідомлення в історію
+    history.append({"role": "user", "content": message.text})
+    if len(history) > MAX_HISTORY:
+        history = history[-MAX_HISTORY:]
+        user_history[user_id] = history
+
+    messages_payload = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+
+    msg = await message.answer("🧠 Думаю...")
     try:
         response = groq_client.chat.completions.create(
             model=GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": message.text}
-            ],
+            messages=messages_payload,
             tools=TOOLS_SCHEMA
         )
         
@@ -180,7 +182,9 @@ async def handle(message: types.Message):
         tool_calls = choice.tool_calls
 
         if tool_calls:
-            results = []
+            # Модель попросила викликати інструмент
+            messages_payload.append(choice)
+            
             for tc in tool_calls:
                 fn_name = tc.function.name
                 if fn_name in tools_map:
@@ -189,20 +193,36 @@ async def handle(message: types.Message):
                         args = json.loads(tc.function.arguments) if tc.function.arguments else {}
                     except Exception:
                         args = {}
+                    
                     res = safe_call(fn, args)
-                    results.append(res)
-                else:
-                    results.append(f"❌ Невідома функція: {fn_name}")
+                    
+                    # Додаємо результат функції в контекст
+                    messages_payload.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": str(res)
+                    })
+
+            # Повторний запит до Groq, щоб модель дала фінальну відповідь на основі отриманих даних
+            second_response = groq_client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=messages_payload
+            )
             
-            await msg.edit_text("\n\n".join(results), parse_mode="Markdown")
+            final_text = second_response.choices[0].message.content
+            history.append({"role": "assistant", "content": final_text})
+            await msg.edit_text(final_text)
+
         else:
-            await msg.edit_text(choice.content or "Отримано порожню відповідь.")
+            final_text = choice.content or "Отримано порожню відповідь."
+            history.append({"role": "assistant", "content": final_text})
+            await msg.edit_text(final_text)
 
     except Exception as e:
-        await msg.edit_text(f"❌ Помилка виконання: {e}")
+        await msg.edit_text(f"❌ Помилка: {e}")
 
 async def main():
-    print("🤖 Бот запущений...")
+    print("🤖 Бот запущений з пам'яттю диалогу...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
