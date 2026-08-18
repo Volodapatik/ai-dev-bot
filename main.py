@@ -1,10 +1,13 @@
 import os
 import json
+import socket
 import asyncio
 import inspect
 from collections import defaultdict
+import aiohttp
 from aiogram import Bot, Dispatcher, types
-from github import Github
+from aiogram.client.session.aiohttp import AiohttpSession
+from github import Auth, Github
 from groq import Groq
 from dotenv import load_dotenv
 
@@ -18,9 +21,17 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # Використовуємо ультрашвидку модель з високими лімітами
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
-bot = Bot(token=BOT_TOKEN)
+# Фікс IPv4 для aiogram (прибирає таймаути через відсутність IPv6)
+connector = aiohttp.TCPConnector(family=socket.AF_INET)
+session = AiohttpSession(connector=connector)
+
+bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher()
-gh = Github(GITHUB_TOKEN)
+
+# Фікс PyGithub (сучасний синтаксис авторизації без DeprecationWarning)
+auth = Auth.Token(GITHUB_TOKEN)
+gh = Github(auth=auth)
+
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 user_history = defaultdict(list)
