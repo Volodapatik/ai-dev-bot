@@ -18,17 +18,11 @@ MY_TELEGRAM_ID = int(os.getenv("MY_TELEGRAM_ID", 0))
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Використовуємо ультрашвидку модель з високими лімітами
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
-# Фікс IPv4 для aiogram (прибирає таймаути через відсутність IPv6)
-connector = aiohttp.TCPConnector(family=socket.AF_INET)
-session = AiohttpSession(connector=connector)
-
-bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher()
 
-# Фікс PyGithub (сучасний синтаксис авторизації без DeprecationWarning)
+# Авторизація PyGithub
 auth = Auth.Token(GITHUB_TOKEN)
 gh = Github(auth=auth)
 
@@ -208,8 +202,12 @@ async def handle(message: types.Message):
         await msg.edit_text(f"❌ Помилка: {e}")
 
 async def main():
-    print("🤖 Запущено на llama-3.1-8b-instant...")
-    await dp.start_polling(bot)
+    # Connector та Bot створюються тільки ВСЕРЕДИНІ async функції
+    connector = aiohttp.TCPConnector(family=socket.AF_INET)
+    async with AiohttpSession(connector=connector) as session:
+        bot = Bot(token=BOT_TOKEN, session=session)
+        print("🤖 Запущено на llama-3.1-8b-instant з IPv4 фіксом...")
+        await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
