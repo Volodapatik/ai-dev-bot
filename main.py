@@ -14,7 +14,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 MY_TELEGRAM_ID = int(os.getenv("MY_TELEGRAM_ID", 0))
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
+
+# Використовуємо ультрашвидку модель з високими лімітами
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -22,9 +24,7 @@ gh = Github(GITHUB_TOKEN)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 user_history = defaultdict(list)
-MAX_HISTORY = 6
-
-# --- ФУНКЦІЇ GITHUB ---
+MAX_HISTORY = 4
 
 def list_repo_files(repo_name: str, path: str = "") -> str:
     """Виводить список файлів у репозиторії GitHub."""
@@ -37,16 +37,7 @@ def list_repo_files(repo_name: str, path: str = "") -> str:
             return f"📂 Файли в {repo_name}/{path}:\n" + "\n".join([f"- {c.name}" for c in contents])
         return f"📄 Файл: {contents.name}"
     except Exception as e:
-        return f"❌ Помилка отримання файлів: {e}"
-
-def list_github_repositories(limit: int = 30) -> str:
-    """Виводить список репозиторіїв користувача."""
-    try:
-        user = gh.get_user()
-        repos = list(user.get_repos())
-        return "📦 Репозиторії:\n" + "\n".join([f"- {r.name}" for r in repos[:limit]])
-    except Exception as e:
-        return f"❌ Помилка списку репозиторіїв: {e}"
+        return f"❌ Помилка: {e}"
 
 def create_or_update_file(repo_name: str, path: str, content: str) -> str:
     """Створює або оновлює файл у репозиторії GitHub."""
@@ -62,7 +53,7 @@ def create_or_update_file(repo_name: str, path: str, content: str) -> str:
             repo.create_file(path, "Create file via AI Assistant", content)
             return f"✅ Файл '{path}' успішно створено в '{repo_name}'."
     except Exception as e:
-        return f"❌ Помилка запису файлу: {e}"
+        return f"❌ Помилка запису: {e}"
 
 def get_file_content(repo_name: str, path: str) -> str:
     """Отримує текстовий вміст файлу з репозиторію."""
@@ -71,15 +62,14 @@ def get_file_content(repo_name: str, path: str) -> str:
         user = gh.get_user()
         repo = user.get_repo(repo_name)
         content = repo.get_contents(path).decoded_content.decode('utf-8')
-        if len(content) > 3000:
-            content = content[:3000] + "\n\n...[вміст обрізано для економії токенів]..."
+        if len(content) > 2500:
+            content = content[:2500] + "\n...[обрізано]..."
         return content
     except Exception as e:
-        return f"❌ Помилка читання файлу: {e}"
+        return f"❌ Помилка читання: {e}"
 
 tools_map = {
     "list_repo_files": list_repo_files,
-    "list_github_repositories": list_github_repositories,
     "create_or_update_file": create_or_update_file,
     "get_file_content": get_file_content
 }
@@ -93,19 +83,11 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "repo_name": {"type": "string", "description": "Назва репозиторію"},
-                    "path": {"type": "string", "description": "Шлях до папки"}
+                    "repo_name": {"type": "string"},
+                    "path": {"type": "string"}
                 },
                 "required": ["repo_name"]
             }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_github_repositories",
-            "description": list_github_repositories.__doc__,
-            "parameters": {"type": "object", "properties": {}, "required": []}
         }
     },
     {
@@ -116,9 +98,9 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "repo_name": {"type": "string", "description": "Назва репозиторію"},
-                    "path": {"type": "string", "description": "Шлях/ім'я файлу (наприклад, index.html)"},
-                    "content": {"type": "string", "description": "Повний новий HTML/JS/CSS код"}
+                    "repo_name": {"type": "string"},
+                    "path": {"type": "string"},
+                    "content": {"type": "string"}
                 },
                 "required": ["repo_name", "path", "content"]
             }
@@ -132,8 +114,8 @@ TOOLS_SCHEMA = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "repo_name": {"type": "string", "description": "Назва репозиторію"},
-                    "path": {"type": "string", "description": "Шлях до файлу"}
+                    "repo_name": {"type": "string"},
+                    "path": {"type": "string"}
                 },
                 "required": ["repo_name", "path"]
             }
@@ -147,11 +129,8 @@ def safe_call(func, args):
     return func(**filtered_args)
 
 SYSTEM_PROMPT = (
-    "Ти — Dev Assistant. Твоє завдання — розробляти веб-сторінки та працювати з GitHub.\n"
-    "Якщо користувач просить переробити сайт на 3D модель (наприклад Three.js), одразу генеруй повний HTML-код "
-    "з необхідними скриптами (CDN Three.js, OrbitControls), стилями для мобільних пристроїв та 3D об'єктом. "
-    "Викликай create_or_update_file для збереження коду в index.html відповідного репозиторію.\n"
-    "Відповідай стисло та зрозуміло українською мовою."
+    "Ти Dev Assistant. Якщо користувач дає посилання на репозиторій або просить щось змінити/переробити index.html на 3D модель — "
+    "одразу генеруй повний HTML код з Three.js та викликай create_or_update_file(repo_name='test-website-repo', path='index.html', content='...')."
 )
 
 @dp.message()
@@ -169,13 +148,13 @@ async def handle(message: types.Message):
 
     messages_payload = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
-    msg = await message.answer("🧠 Працюю над завданням...")
+    msg = await message.answer("⚡ Генерую 3D код та оновлюю GitHub...")
     try:
         response = groq_client.chat.completions.create(
             model=GROQ_MODEL,
             messages=messages_payload,
             tools=TOOLS_SCHEMA,
-            max_tokens=4096
+            max_tokens=3500
         )
         
         choice = response.choices[0].message
@@ -194,7 +173,6 @@ async def handle(message: types.Message):
                         args = {}
                     
                     res = safe_call(fn, args)
-                    
                     messages_payload.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -203,18 +181,15 @@ async def handle(message: types.Message):
 
             second_response = groq_client.chat.completions.create(
                 model=GROQ_MODEL,
-                messages=messages_payload,
-                max_tokens=1000
+                messages=messages_payload
             )
             
-            final_text = second_response.choices[0].message.content or "Зміни успішно внесено до GitHub!"
+            final_text = second_response.choices[0].message.content or "✅ 3D тачка успішно загружена в index.html!"
             history.append({"role": "assistant", "content": final_text})
             await msg.edit_text(final_text)
 
         else:
-            final_text = choice.content
-            if not final_text:
-                final_text = "Не вдалося згенерувати відповідь. Спробуй повторити запит ще раз."
+            final_text = choice.content or "Виконано."
             history.append({"role": "assistant", "content": final_text})
             await msg.edit_text(final_text)
 
@@ -222,7 +197,7 @@ async def handle(message: types.Message):
         await msg.edit_text(f"❌ Помилка: {e}")
 
 async def main():
-    print("🤖 Бот запущен з підтримкою Qwen та двокроковим інструментарієм...")
+    print("🤖 Запущено на llama-3.1-8b-instant...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
