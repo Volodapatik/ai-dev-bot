@@ -63,33 +63,56 @@ def delete_github_repository(name: str) -> str:
         return f"Помилка видалення: {e}"
 
 def enable_github_pages(repo_name: str, branch: str = "main", path: str = "/") -> str:
-    """
-    Вмикає GitHub Pages для вказаного репозиторію.
-    :param repo_name: назва репозиторію
-    :param branch: гілка (за замовчуванням 'main')
-    :param path: папка ('/' або '/docs', за замовчуванням '/')
-    """
+    """Вмикає GitHub Pages для вказаного репозиторію."""
     try:
         user = gh.get_user()
         repo = user.get_repo(repo_name)
-        # Вмикаємо Pages з вказаної гілки та папки
         repo.enable_pages(source={"branch": branch, "path": path})
-        return f"🚀 GitHub Pages успішно ввімкнено для '{repo_name}'!\nСайт буде доступний за адресою: https://{user.login}.github.io/{repo_name}/"
+        return f"🚀 GitHub Pages увімкнено для '{repo_name}'!\nАдреса сайту: https://{user.login}.github.io/{repo_name}/"
     except Exception as e:
         return f"Помилка увімкнення GitHub Pages: {e}"
+
+def create_or_update_file(repo_name: str, path: str, content: str, commit_message: str = "Update file via AI Assistant") -> str:
+    """Створює або оновлює/замінює файл у репозиторії."""
+    try:
+        user = gh.get_user()
+        repo = user.get_repo(repo_name)
+        
+        try:
+            existing_file = repo.get_contents(path)
+            repo.update_file(path, commit_message, content, existing_file.sha)
+            return f"Файл '{path}' успішно оновлено у репозиторії '{repo_name}'."
+        except Exception:
+            repo.create_file(path, commit_message, content)
+            return f"Файл '{path}' успішно створено у репозиторії '{repo_name}'."
+    except Exception as e:
+        return f"Помилка запису файлу: {e}"
+
+def get_file_content(repo_name: str, path: str) -> str:
+    """Прочитати вміст існуючого файлу з репозиторію GitHub."""
+    try:
+        user = gh.get_user()
+        repo = user.get_repo(repo_name)
+        file_content = repo.get_contents(path)
+        return file_content.decoded_content.decode('utf-8')
+    except Exception as e:
+        return f"Помилка читання файлу: {e}"
 
 tools_list = [
     create_github_repository, 
     list_github_repositories, 
     delete_github_repository, 
-    enable_github_pages
+    enable_github_pages,
+    create_or_update_file,
+    get_file_content
 ]
 
 SYSTEM_INSTRUCTION = (
     "Ти — розширений AI Dev Assistant для Володимира Патика. "
     "Ти маєш ПРЯМИЙ доступ до керування його акаунтом GitHub через вбудовані функції (tools). "
-    "Ти вмієш створювати, переглядати, видаляти репозиторії, а також вмикати GitHub Pages. "
-    "Коли користувач просить увімкнути або налаштувати Pages / сайт для репозиторію — викликай функцію enable_github_pages."
+    "Ти вмієш переглядати, створювати та видаляти репозиторії, читати вміст файлів (get_file_content), "
+    "створювати/замінювати файли (create_or_update_file) та вмикати GitHub Pages. "
+    "Якщо користувач надсилає файл або код і просить закинути/оновити його в репозиторії — виконуй це через create_or_update_file."
 )
 
 def is_owner(user_id: int) -> bool:
@@ -99,26 +122,16 @@ def is_owner(user_id: int) -> bool:
 async def start_cmd(message: types.Message):
     if not is_owner(message.from_user.id):
         return
-    await message.answer(
-        "🤖 **AI Dev Assistant готовий!**\n\n"
-        "Тепер ти можеш писати мені звичайними словами:\n"
-        "• *«Створи репозиторій my-test-bot»*\n"
-        "• *«Покажи всі мої репозиторії»*\n"
-        "• *«Увімкни GitHub Pages для репозиторію Sites»*\n"
-        "• *«Видали репозиторій test»*"
-    )
+    await message.answer("🤖 **AI Dev Assistant готовий до роботи з файлами та кодом!**")
 
-@dp.message()
-async def handle_ai_prompt(message: types.Message):
-    if not is_owner(message.from_user.id):
-        return
-    
+async def process_user_request(message: types.Message, user_text: str):
+    """Універсальна обробка текстових запитів та файлів."""
     msg = await message.answer("🧠 Обробка запиту...")
     
     try:
         response = ai_client.models.generate_content(
             model=GEMINI_MODEL,
-            contents=message.text,
+            contents=user_text,
             config=genai_types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
                 tools=tools_list
@@ -126,27 +139,63 @@ async def handle_ai_prompt(message: types.Message):
         )
         
         if response.function_calls:
+            results = []
             for call in response.function_calls:
                 func_name = call.name
                 args = call.args
                 
                 if func_name == "create_github_repository":
-                    result = create_github_repository(**args)
+                    res = create_github_repository(**args)
                 elif func_name == "list_github_repositories":
-                    result = list_github_repositories(**args)
+                    res = list_github_repositories(**args)
                 elif func_name == "delete_github_repository":
-                    result = delete_github_repository(**args)
+                    res = delete_github_repository(**args)
                 elif func_name == "enable_github_pages":
-                    result = enable_github_pages(**args)
+                    res = enable_github_pages(**args)
+                elif func_name == "create_or_update_file":
+                    res = create_or_update_file(**args)
+                elif func_name == "get_file_content":
+                    res = get_file_content(**args)
                 else:
-                    result = "Невідома функція."
+                    res = "Невідома функція."
                 
-                await msg.edit_text(f"⚙️ **Результат:**\n\n{result}", disable_web_page_preview=True)
-                return
+                results.append(res)
+                
+            await msg.edit_text("⚙️ **Результат виконання:**\n\n" + "\n\n".join(results), disable_web_page_preview=True)
+            return
 
         await msg.edit_text(response.text)
     except Exception as e:
         await msg.edit_text(f"❌ Помилка: {e}")
+
+@dp.message(lambda m: m.document)
+async def handle_document(message: types.Message):
+    """Обробка надісланих файлів (документів)."""
+    if not is_owner(message.from_user.id):
+        return
+    
+    file_name = message.document.file_name
+    caption = message.caption or "Закинь цей файл у репозиторій"
+    
+    # Завантажуємо файл з Telegram у пам'ять
+    file_info = await bot.get_file(message.document.file_id)
+    downloaded_file = await bot.download_file(file_info.file_path)
+    file_content = downloaded_file.read().decode('utf-8', errors='ignore')
+    
+    prompt = (
+        f"Користувач надіслав файл з назвою '{file_name}'.\n"
+        f"Вміст файлу:\n```\n{file_content}\n```\n"
+        f"Коментар/інструкція користувача до файлу: {caption}"
+    )
+    
+    await process_user_request(message, prompt)
+
+@dp.message()
+async def handle_ai_prompt(message: types.Message):
+    """Обробка звичайних текстових повідомлень або скопійованого коду."""
+    if not is_owner(message.from_user.id):
+        return
+    await process_user_request(message, message.text)
 
 async def main():
     print("Бот запущений...")
