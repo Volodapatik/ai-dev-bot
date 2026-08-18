@@ -33,10 +33,7 @@ def create_github_repository(name: str, private: bool = False) -> str:
         return f"Помилка створення репозиторію: {e}"
 
 def list_github_repositories(limit: int = 50) -> str:
-    """
-    Повертає загальну кількість та список репозиторіїв користувача.
-    :param limit: кількість репозиторіїв для відображення у списку (за замовчуванням 50).
-    """
+    """Повертає загальну кількість та список репозиторіїв користувача."""
     try:
         user = gh.get_user()
         repos = list(user.get_repos())
@@ -65,13 +62,34 @@ def delete_github_repository(name: str) -> str:
     except Exception as e:
         return f"Помилка видалення: {e}"
 
-tools_list = [create_github_repository, list_github_repositories, delete_github_repository]
+def enable_github_pages(repo_name: str, branch: str = "main", path: str = "/") -> str:
+    """
+    Вмикає GitHub Pages для вказаного репозиторію.
+    :param repo_name: назва репозиторію
+    :param branch: гілка (за замовчуванням 'main')
+    :param path: папка ('/' або '/docs', за замовчуванням '/')
+    """
+    try:
+        user = gh.get_user()
+        repo = user.get_repo(repo_name)
+        # Вмикаємо Pages з вказаної гілки та папки
+        repo.enable_pages(source={"branch": branch, "path": path})
+        return f"🚀 GitHub Pages успішно ввімкнено для '{repo_name}'!\nСайт буде доступний за адресою: https://{user.login}.github.io/{repo_name}/"
+    except Exception as e:
+        return f"Помилка увімкнення GitHub Pages: {e}"
+
+tools_list = [
+    create_github_repository, 
+    list_github_repositories, 
+    delete_github_repository, 
+    enable_github_pages
+]
 
 SYSTEM_INSTRUCTION = (
     "Ти — розширений AI Dev Assistant для Володимира Патика. "
     "Ти маєш ПРЯМИЙ доступ до керування його акаунтом GitHub через вбудовані функції (tools). "
-    "Коли користувач запитує про репозиторії, викликай відповідні функції. "
-    "Якщо запитують про кількість або список усіх репозиторіїв — використовуй list_github_repositories з потрібним limit."
+    "Ти вмієш створювати, переглядати, видаляти репозиторії, а також вмикати GitHub Pages. "
+    "Коли користувач просить увімкнути або налаштувати Pages / сайт для репозиторію — викликай функцію enable_github_pages."
 )
 
 def is_owner(user_id: int) -> bool:
@@ -86,6 +104,7 @@ async def start_cmd(message: types.Message):
         "Тепер ти можеш писати мені звичайними словами:\n"
         "• *«Створи репозиторій my-test-bot»*\n"
         "• *«Покажи всі мої репозиторії»*\n"
+        "• *«Увімкни GitHub Pages для репозиторію Sites»*\n"
         "• *«Видали репозиторій test»*"
     )
 
@@ -117,6 +136,8 @@ async def handle_ai_prompt(message: types.Message):
                     result = list_github_repositories(**args)
                 elif func_name == "delete_github_repository":
                     result = delete_github_repository(**args)
+                elif func_name == "enable_github_pages":
+                    result = enable_github_pages(**args)
                 else:
                     result = "Невідома функція."
                 
