@@ -1,5 +1,6 @@
 import os
 import asyncio
+import requests
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from github import Github
@@ -63,12 +64,31 @@ def delete_github_repository(name: str) -> str:
         return f"Помилка видалення: {e}"
 
 def enable_github_pages(repo_name: str, branch: str = "main", path: str = "/") -> str:
-    """Вмикає GitHub Pages для вказаного репозиторію."""
+    """Вмикає GitHub Pages для репозиторію через GitHub REST API."""
     try:
         user = gh.get_user()
-        repo = user.get_repo(repo_name)
-        repo.enable_pages(source={"branch": branch, "path": path})
-        return f"🚀 GitHub Pages увімкнено для '{repo_name}'!\nАдреса сайту: https://{user.login}.github.io/{repo_name}/"
+        username = user.login
+        
+        url = f"https://api.github.com/repos/{username}/{repo_name}/pages"
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        data = {
+            "source": {
+                "branch": branch,
+                "path": path
+            }
+        }
+        
+        response = requests.post(url, headers=headers, json=data)
+        
+        if response.status_code in [201, 202]:
+            return f"🚀 GitHub Pages успішно увімкнено для '{repo_name}'!\nСайт буде доступний за адресою: https://{username}.github.io/{repo_name}/"
+        elif response.status_code == 409:
+            return f"ℹ️ GitHub Pages вже увімкнено для '{repo_name}'.\nАдреса сайту: https://{username}.github.io/{repo_name}/"
+        else:
+            return f"❌ Помилка GitHub API ({response.status_code}): {response.json().get('message', response.text)}"
     except Exception as e:
         return f"Помилка увімкнення GitHub Pages: {e}"
 
@@ -110,9 +130,7 @@ tools_list = [
 SYSTEM_INSTRUCTION = (
     "Ти — розширений AI Dev Assistant для Володимира Патика. "
     "Ти маєш ПРЯМИЙ доступ до керування його акаунтом GitHub через вбудовані функції (tools). "
-    "Ти вмієш переглядати, створювати та видаляти репозиторії, читати вміст файлів (get_file_content), "
-    "створювати/замінювати файли (create_or_update_file) та вмикати GitHub Pages. "
-    "Якщо користувач надсилає файл або код і просить закинути/оновити його в репозиторії — виконуй це через create_or_update_file."
+    "Коли тебе просять увімкнути Pages — використовуй enable_github_pages."
 )
 
 def is_owner(user_id: int) -> bool:
@@ -122,11 +140,10 @@ def is_owner(user_id: int) -> bool:
 async def start_cmd(message: types.Message):
     if not is_owner(message.from_user.id):
         return
-    await message.answer("🤖 **AI Dev Assistant готовий до роботи з файлами та кодом!**")
+    await message.answer("🤖 **AI Dev Assistant готовий!**")
 
 async def process_user_request(message: types.Message, user_text: str):
-    """Універсальна обробка текстових запитів та файлів."""
-    msg = await message.answer("🧠 Обробка запиту...")
+    msg = await message.answer("🧠 Виконую завдання...")
     
     try:
         response = ai_client.models.generate_content(
@@ -161,7 +178,7 @@ async def process_user_request(message: types.Message, user_text: str):
                 
                 results.append(res)
                 
-            await msg.edit_text("⚙️ **Результат виконання:**\n\n" + "\n\n".join(results), disable_web_page_preview=True)
+            await msg.edit_text("⚙️ **Результат:**\n\n" + "\n\n".join(results), disable_web_page_preview=True)
             return
 
         await msg.edit_text(response.text)
@@ -170,29 +187,26 @@ async def process_user_request(message: types.Message, user_text: str):
 
 @dp.message(lambda m: m.document)
 async def handle_document(message: types.Message):
-    """Обробка надісланих файлів (документів)."""
     if not is_owner(message.from_user.id):
         return
     
     file_name = message.document.file_name
     caption = message.caption or "Закинь цей файл у репозиторій"
     
-    # Завантажуємо файл з Telegram у пам'ять
     file_info = await bot.get_file(message.document.file_id)
     downloaded_file = await bot.download_file(file_info.file_path)
     file_content = downloaded_file.read().decode('utf-8', errors='ignore')
     
     prompt = (
-        f"Користувач надіслав файл з назвою '{file_name}'.\n"
-        f"Вміст файлу:\n```\n{file_content}\n```\n"
-        f"Коментар/інструкція користувача до файлу: {caption}"
+        f"Користувач надіслав файл '{file_name}'.\n"
+        f"Вміст:\n```\n{file_content}\n```\n"
+        f"Інструкція: {caption}"
     )
     
     await process_user_request(message, prompt)
 
 @dp.message()
 async def handle_ai_prompt(message: types.Message):
-    """Обробка звичайних текстових повідомлень або скопійованого коду."""
     if not is_owner(message.from_user.id):
         return
     await process_user_request(message, message.text)
